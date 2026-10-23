@@ -158,8 +158,21 @@ def predict_measurement(
     H_landmark : np.ndarray, shape=(2, 2)
         d z / d m_j.
     """
-    # TODO(d): predict [range, bearing] and stack the two rows of each Jacobian.
-    raise NotImplementedError("Task 1 (d)")
+
+    range_pose = np.zeros((1,3), order='F')
+    range_landmark = np.zeros((1,2), order='F')
+    bearing_pose = np.zeros((1,3), order='F')
+    bearing_landmark = np.zeros((1,2), order='F')
+
+    z = np.array([
+        pose.range(landmark, range_pose, range_landmark),
+        pose.bearing(landmark, bearing_pose, bearing_landmark).theta()
+    ])
+
+    H_pose = np.vstack([range_pose, bearing_pose])
+    H_landmark = np.vstack([range_landmark, bearing_landmark])
+
+    return z, H_pose, H_landmark
 
 
 def inverse_measurement(pose: gtsam.Pose2, measurement: np.ndarray) -> np.ndarray:
@@ -241,9 +254,22 @@ def innovation_covariance(
     np.ndarray, shape=(2n, 2n)
         The innovation covariance ``S``.
     """
-    # TODO(f): build the stacked H, build the block-diagonal R, and form S.
-    raise NotImplementedError("Task 1 (f)")
+    n = len(jacobians_pose)
+    H = np.zeros((2*n, 3 + 2*n), dtype=float)
 
+    for i, (H_pose, H_landmark) in enumerate(zip(jacobians_pose, jacobians_landmark)):
+        row_start = 2 * i
+        row_end = row_start + 2
+        landmark_start = 3 + 2 * i
+        landmark_end = landmark_start + 2
+
+        H[row_start:row_end, 0:3] = H_pose
+        H[row_start:row_end, landmark_start:landmark_end] = H_landmark
+
+    R = np.kron(np.eye(n), measurement_cov)
+    S = H @ joint_covariance @ H.T + R
+
+    return S
 
 # ---------------------------------------------------------------------------
 # Local map extraction  (given -- builds on your predict_measurement)
