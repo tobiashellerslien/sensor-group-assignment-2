@@ -252,9 +252,22 @@ def innovation_covariance(
     np.ndarray, shape=(2n, 2n)
         The innovation covariance ``S``.
     """
-    # TODO(f): build the stacked H, build the block-diagonal R, and form S.
-    raise NotImplementedError("Task 1 (f)")
+    n = len(jacobians_pose)
+    H = np.zeros((2*n, 3 + 2*n), dtype=float)
 
+    for i, (H_pose, H_landmark) in enumerate(zip(jacobians_pose, jacobians_landmark)):
+        row_start = 2 * i
+        row_end = row_start + 2
+        landmark_start = 3 + 2 * i
+        landmark_end = landmark_start + 2
+
+        H[row_start:row_end, 0:3] = H_pose
+        H[row_start:row_end, landmark_start:landmark_end] = H_landmark
+
+    R = np.kron(np.eye(n), measurement_cov)
+    S = H @ joint_covariance @ H.T + R
+
+    return S
 
 # ---------------------------------------------------------------------------
 # Local map extraction  (given -- builds on your predict_measurement)
