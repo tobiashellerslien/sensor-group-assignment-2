@@ -206,7 +206,6 @@ def assemble_joint_covariance(
     np.ndarray, shape=(3 + 2n, 3 + 2n)
         P, whose block (i, j) is the covariance between ``keys[i]`` and ``keys[j]``.
     """
-    # TODO(e): fill P block by block from joint_marginal.at(key_i, key_j).
     return np.block([[joint_marginal.at(key_i, key_j) for key_j in keys] for key_i in keys])
 
 
