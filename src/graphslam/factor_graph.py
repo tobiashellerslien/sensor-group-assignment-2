@@ -115,7 +115,14 @@ def add_landmark_factor(
         From :func:`bearing_range_noise_model`, ordered [bearing, range].
     """
     # TODO(c3): add a BearingRangeFactor2D. Mind the argument order.
-    raise NotImplementedError("Task 1 (c3)")
+    range_, bearing = measurement
+    graph.add(gtsam.BearingRangeFactor2D(
+        pose_key,
+        landmark_key,
+        gtsam.Rot2(bearing),
+        range_,
+        noise_model
+    ))
 
 
 # ---------------------------------------------------------------------------
