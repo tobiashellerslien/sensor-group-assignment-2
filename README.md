@@ -1,0 +1,156 @@
+# TTK4250 Group Assignment 2 — Factor graph SLAM
+
+Landmark SLAM on a factor graph, solved with GTSAM's iSAM2 back-end and a JCBB
+front-end, on two datasets: a simulated one with ground truth, and the Victoria
+Park lidar dataset.
+
+## Setup
+
+Install [Miniconda](https://www.anaconda.com/download) — the minimal installer,
+**not** the full Anaconda Distribution, and not "whatever conda you already
+have". Then, from this directory:
+
+```sh
+conda info                      # check: conda version 25 or newer
+conda env create -f environment.yml
+conda activate ttk4250_ga2
+pip install -e . --no-deps
+```
+
+**That first line is not optional.** A conda older than 25 cannot solve this
+environment, and the error it gives you is unrecognisable. If `conda version` is
+older, or if `base environment` points at an Anaconda install you did not expect,
+stop and read `docs/INSTALL.md`.
+
+`pip install -e . --no-deps` puts `run_sim`, `run_real` and `plot_run` on your
+path. Re-run it only if entry points change; editing source needs nothing.
+
+Do not use `pip install gtsam`: PyPI has no Windows wheel for GTSAM.
+
+## Running
+
+From the root of this directory:
+
+```sh
+run_sim                      # simulated data
+run_real                     # Victoria Park
+
+run_sim --config configs/sim_default.yaml --steps 1000 --output-dir runs/sim/example
+plot_run runs/sim/example    # re-plot a finished run
+```
+
+With the environment active. A run ends by opening its figures, and the
+command returns once you close the windows. Add `--no-show-plots` to skip them
+(for example over SSH); figures are written to the run directory either way.
+
+Ctrl+C stops a run and still saves it up to the last completed step, marked as
+aborted, so you can plot it with `plot_run`. Add `--no-save-on-abort` if you
+would rather Ctrl+C just exit.
+
+Every run writes its resolved configuration, per-step diagnostics and state
+snapshots into its output directory, so a run can be re-plotted and compared
+later without re-running it.
+
+## What you implement
+
+Ten functions, all marked `TODO` in the source and graded by `pytest`:
+
+| | Function | File |
+|---|---|---|
+| a | `relative_pose` | `src/graphslam/preprocessing.py` |
+| b | `preintegrate` | `src/graphslam/preprocessing.py` |
+| c1 | `predict_pose` | `src/graphslam/factor_graph.py` |
+| c2 | `add_odometry_factor` | `src/graphslam/factor_graph.py` |
+| c3 | `add_landmark_factor` | `src/graphslam/factor_graph.py` |
+| d | `predict_measurement` | `src/graphslam/factor_graph.py` |
+| e | `assemble_joint_covariance` | `src/graphslam/factor_graph.py` |
+| f | `innovation_covariance` | `src/graphslam/factor_graph.py` |
+| g | `inverse_measurement` | `src/graphslam/factor_graph.py` |
+| h | `TentativeLandmark.is_confirmed` | `src/graphslam/landmark_manager.py` |
+
+Each part has its own tests, selected by a marker named after the part:
+
+```sh
+pytest -m b              # the tests for (b)
+pytest -m c2 -x          # (c2), stop at the first failure
+pytest                   # everything, including the end-to-end tests
+```
+
+Nothing else needs changing. `slam.py`, `data_association.py`, the loaders, the
+logger and the plotting are given.
+
+## Layout
+
+```text
+environment.yml   the conda environment; this is the supported setup
+configs/          run configurations; everything marked "TODO tune" is yours
+data/             simulated and Victoria Park datasets
+docs/             INSTALL.md (setup) and GTSAM.md (the GTSAM calls you need)
+src/graphslam/
+  preprocessing.py     front-end: odometry and lidar          (a, b)
+  factor_graph.py      factors, measurement model, covariance (c-g)
+  landmark_manager.py  landmark birth, M-of-N                 (h)
+  data_association.py  JCBB                                   given
+  evaluation.py        NEES, NIS, map quality, run summary     given
+  slam.py              the main loop                          given
+  loaders/             dataset adapters                       given
+  plotting/, plotter.py, logger.py                            given
+tests/            the graded test suite
+typings/          GTSAM type stubs, so your editor can show its signatures
+create_handin.py  zips your code and configs for the hand-in
+```
+
+## Editor support
+
+GTSAM is a compiled library, so on its own your editor cannot see what is
+inside it. `typings/` holds type stubs generated from the installed GTSAM, which
+VS Code (Pylance) picks up automatically when you open this folder as the
+workspace: completion, argument names and types, and every overload. For
+example, hovering `compose` shows that it optionally takes the two Jacobians
+`H1` and `H2`. Select the `ttk4250_ga2` environment as the interpreter.
+
+The stubs have signatures only, no descriptions. From Python, `help()` shows
+the same signatures:
+
+```sh
+python -c "import gtsam; help(gtsam.Pose2.compose)"
+```
+
+**`docs/GTSAM.md` lists every GTSAM call Task 1 needs, with what each one
+means.** Start there; the assignment text names the calls each part needs.
+GTSAM's own documentation (https://gtsam.org) is written for C++ and rarely
+needed.
+
+## Reading a run
+
+Every run prints a summary as soon as it is saved, before any figure opens.
+`plot_run` prints it too, and it is stored under `"summary"` in the run's
+`metadata.json`, so runs can be compared without plotting them:
+
+```text
+Map quality: 72 of 78 observed true landmarks mapped, 6 missed, 0 duplicates, 3 spurious, RMS position error 1.89 m
+Summary: RMSE x 0.72 m, y 0.80 m, yaw 1.18 deg | pose ANEES 8.37 (expected 3, 95% interval [2.85, 3.15]) | landmark ANIS 0.33 per DOF (expected 1, 95% interval [0.98, 1.02])
+```
+
+The numbers are the ones the figures show. The averages follow the book's
+(4.67): the pose ANEES is the mean NEES (expected 3, the pose dimension) and on
+Victoria Park the GPS ANIS is the mean NIS (expected 2). The landmark NIS of a
+scan has two degrees of freedom per associated landmark, which changes from
+scan to scan, so it is averaged per degree of freedom instead (expected 1).
+Every average comes with its 95% interval, and every per-step bound in the
+figures is a 95% bound. The map-quality line needs ground truth, so it only
+appears on the simulated set.
+
+## Debugging
+
+On the simulated set, the map-quality line (also in the title of
+`final_snapshot.pdf`) is the first thing to look at:
+
+```text
+Map quality: 78 of 78 observed true landmarks mapped, 0 missed, 0 duplicates, 0 spurious
+```
+
+Duplicates mean data association failed: a measurement of a landmark already in
+the map was not matched to it and became a new landmark. If your error is large
+and there are no duplicates, look at the models and the noise; if there are
+duplicates, look at association first.

@@ -1,0 +1,327 @@
+"""The plotting stack gets imported and exercised at least once.
+
+``test_end_to_end`` runs with ``save_plots=False``, so without this file nothing
+in the suite ever imports ``graphslam.plotter`` or the functions behind it. A
+rename in ``data_association`` that was not propagated to
+``plotting/plotting_funcs.py`` therefore passed every test and only showed up as
+an ``ImportError`` after a 2000-step Victoria Park run had finished. These tests
+close that gap: the first one catches import-level breakage in well under a
+second, the rest actually draw the figures.
+
+Everything here runs on the Agg backend, so no window is opened.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+
+from graphslam.config import SlamConfig
+from graphslam.logger import SlamLogger
+from graphslam.paths import simulated_data_file
+from graphslam.slam import run_slam
+
+ROOT = Path(__file__).resolve().parents[1]
+STEPS = 60
+
+# Written by plot_all on the simulated data set. position_nis is absent because
+# the simulated set has no GNSS; it is covered separately below.
+EXPECTED_FIGURES = [
+    "final_snapshot.pdf",
+    "pose_diagnostics.pdf",
+    "pose_nees.pdf",
+    "landmark_nis.pdf",
+    "timing_cumulative.pdf",
+    "timing_per_step.pdf",
+    "landmarks_and_timing.pdf",
+    "timing_vs_landmarks.pdf",
+    "landmark_growth.pdf",
+]
+
+try:
+    SIMULATED: Path | None = simulated_data_file()
+except FileNotFoundError:
+    SIMULATED = None
+
+needs_data = pytest.mark.skipif(
+    SIMULATED is None or not SIMULATED.exists(),
+    reason="simulated data set not found",
+)
+
+
+def test_plotting_modules_import() -> None:
+    """Cheap guard against a rename that was not carried through.
+
+    No data set, no run, no figure -- just the imports every plotting entry
+    point performs. If this fails, nothing below is worth looking at.
+    """
+    import graphslam.plotter  # noqa: F401
+    import graphslam.plotting.plotting_funcs  # noqa: F401
+    import graphslam.plotting.thesis_style  # noqa: F401
+    import graphslam.plotting.utils  # noqa: F401
+
+
+@pytest.fixture(scope="module")
+def plotted_run(tmp_path_factory) -> Path:
+    """A short simulated run with plotting switched on, shared by the tests."""
+    if SIMULATED is None or not SIMULATED.exists():
+        pytest.skip("simulated data set not found")
+
+    from graphslam.loaders.simulated import SimulatedDataLoader
+
+    output_dir = tmp_path_factory.mktemp("plotted_run")
+
+    # Deliberately the stock configuration: log_association_diagnostics is on
+    # (plot_landmark_nis needs it) and log_snapshot is off, since snap_final.npz
+    # is written regardless and that is what every plot here reads.
+    config = SlamConfig.load(ROOT / "configs" / "sim_default.yaml")
+
+    run_slam(
+        config=config,
+        dataset=SimulatedDataLoader(SIMULATED),
+        output_dir=output_dir,
+        num_steps=STEPS,
+        show_plots=False,
+        save_plots=True,
+    )
+
+    return output_dir
+
+
+@needs_data
+def test_plot_all_writes_every_figure(plotted_run: Path) -> None:
+    """Each plotting function runs to completion and leaves a non-empty file."""
+    figure_dir = plotted_run / "figures"
+    assert figure_dir.is_dir(), "run_slam(save_plots=True) should create figures/"
+
+    for name in EXPECTED_FIGURES:
+        path = figure_dir / name
+        assert path.exists(), f"{name} was not written"
+        assert path.stat().st_size > 0, f"{name} is empty"
+
+
+@needs_data
+def test_a_run_stores_its_summary_and_it_matches_the_figures(plotted_run: Path) -> None:
+    """The summary printed after a run is computed from the same data as the figures."""
+    import json
+
+    from graphslam.plotter import SlamRunPlotter
+
+    summary = json.loads((plotted_run / "metadata.json").read_text())["summary"]
+    for key in ("rmse_x_m", "pose_anees", "landmark_anis_per_dof", "map_quality"):
+        assert summary.get(key) is not None, f"metadata.json summary is missing {key}"
+
+    plotter = SlamRunPlotter.from_run(plotted_run)
+    assert plotter.summary().as_dict() == summary, "summary() disagrees with what the run stored"
+
+    _, ax = plotter.plot_pose_nees()
+    nees_text = ax.texts[0].get_text()
+    assert f"ANEES = {summary['pose_anees']:.2f}" in nees_text, (
+        f"the NEES figure says {nees_text!r}, the summary {summary['pose_anees']:.2f}"
+    )
+
+
+@needs_data
+def test_the_landmark_nis_figure_reports_the_share_inside_its_bounds(plotted_run: Path) -> None:
+    """Task 2 asks for the share of per-step NIS values inside the bounds; the figure states it."""
+    from graphslam.evaluation import chi2_bounds, landmark_nis
+    from graphslam.plotter import SlamRunPlotter
+
+    plotter = SlamRunPlotter.from_run(plotted_run)
+    nis, dofs, _ = landmark_nis(plotter.association)
+    lower, upper = chi2_bounds(dofs)
+    expected = 100.0 * np.mean((nis >= lower) & (nis <= upper))
+
+    _, ax = plotter.plot_landmark_nis()
+    title = ax.get_title()
+    assert f"{expected:.1f}% inside the 95% bounds" in title, (
+        f"the landmark NIS title says {title!r}, but {expected:.1f}% of the per-step values are inside"
+    )
+
+
+@needs_data
+def test_plotter_methods_draw_into_the_axes_they_are_given(plotted_run: Path) -> None:
+    """Reports combine figures into panels, so every ``ax=`` must be honoured."""
+    from graphslam.plotter import SlamRunPlotter
+
+    plotter = SlamRunPlotter.from_run(plotted_run)
+    for name in ("plot_final_snapshot", "plot_pose_nees", "plot_landmark_nis", "plot_landmark_growth"):
+        fig, ax = plt.subplots()
+        _, drawn = getattr(plotter, name)(ax=ax)
+        assert drawn is ax, f"{name}(ax=...) drew into a new figure instead of the given axes"
+        plt.close("all")
+
+
+@pytest.fixture(scope="module")
+def wrong_association_run(tmp_path_factory) -> Path:
+    """The same short run, with one association forced wrong as in Task 4."""
+    if SIMULATED is None or not SIMULATED.exists():
+        pytest.skip("simulated data set not found")
+
+    from graphslam.loaders.simulated import SimulatedDataLoader
+
+    output_dir = tmp_path_factory.mktemp("wrong_association_run")
+    config = SlamConfig.load(ROOT / "configs" / "sim_default.yaml")
+    config.association.inject_wrong_at_step = 40
+
+    run_slam(
+        config=config,
+        dataset=SimulatedDataLoader(SIMULATED),
+        output_dir=output_dir,
+        num_steps=STEPS,
+        show_plots=False,
+        save_plots=True,
+    )
+    return output_dir
+
+
+@needs_data
+def test_a_forced_wrong_association_gets_its_own_figure(
+    plotted_run: Path, wrong_association_run: Path
+) -> None:
+    """Task 4 reads the NIS and the association counts around the forced step from this figure."""
+    from graphslam.plotter import SlamRunPlotter
+
+    assert (wrong_association_run / "figures" / "wrong_association.pdf").exists(), (
+        "a run with inject_wrong_at_step set should write wrong_association.pdf"
+    )
+    assert not (plotted_run / "figures" / "wrong_association.pdf").exists(), (
+        "a run without inject_wrong_at_step should not write wrong_association.pdf"
+    )
+
+    _, (nis_ax, count_ax) = SlamRunPlotter.from_run(wrong_association_run).plot_wrong_association()
+    assert "step 40" in nis_ax.get_title(), f"the title should name the forced step: {nis_ax.get_title()!r}"
+    assert nis_ax.get_yscale() == "log", "the NIS must be on a log scale, or the spike hides the rest"
+    assert count_ax.get_xlim() == (-10, 90), f"expected steps 40 +- 50, got {count_ax.get_xlim()}"
+    plt.close("all")
+
+
+@needs_data
+def test_the_loss_is_named_in_the_figure_and_the_summary(wrong_association_run: Path) -> None:
+    """Task 4 compares a least-squares run with a Huber run; both outputs must say which is which."""
+    from graphslam.plotter import SlamRunPlotter
+
+    plotter = SlamRunPlotter.from_run(wrong_association_run)
+    _, (nis_ax, _) = plotter.plot_wrong_association()
+    assert "least squares" in nis_ax.get_title(), f"title should name the loss: {nis_ax.get_title()!r}"
+    assert "robust kernel" not in str(plotter.summary()), "a least-squares run should not mention a kernel"
+
+    plotter.config.backend.robust_kernel = "huber"
+    _, (nis_ax, _) = plotter.plot_wrong_association()
+    assert "Huber, k = 1.345" in nis_ax.get_title(), f"title should name the loss: {nis_ax.get_title()!r}"
+    assert "robust kernel Huber, k = 1.345" in str(plotter.summary()), str(plotter.summary())
+    plt.close("all")
+
+
+def _nis_values(ax) -> np.ndarray:
+    """The plotted NIS values: the first line, without the NaNs that break it at gaps."""
+    values = np.asarray(ax.lines[0].get_ydata(), dtype=float)
+    return values[np.isfinite(values)]
+
+
+@needs_data
+def test_position_nis_plot_runs(plotted_run: Path) -> None:
+    """The one plot the simulated set cannot reach on its own.
+
+    ``plot_position_nis`` is skipped above because only Victoria Park carries
+    GNSS. Feeding it a synthetic track keeps it on a tested path instead of
+    being discovered broken halfway through a long real run.
+    """
+    from graphslam.plotting.plotting_funcs import plot_position_nis
+
+    snapshot = SlamLogger.load_snapshot(plotted_run / "snapshots" / "snap_final.npz")
+    steps = SlamLogger.load_steps(plotted_run)
+
+    poses = snapshot["poses"]
+    times = steps["scan_time"][: len(poses)]
+
+    # [time, x, y], one sample every fifth pose, offset so the NIS is non-zero.
+    gnss = np.column_stack(
+        [times[::5], poses[::5, 0] + 0.3, poses[::5, 1] - 0.2]
+    )
+
+    fig, ax = plot_position_nis(
+        gnss=gnss,
+        poses=poses,
+        poses_covs=snapshot["poses_covariance"],
+        poses_times=times,
+    )
+
+    assert ax.lines, "the NIS line should have been drawn"
+    plt.close(fig)
+
+
+def test_position_nis_ignores_gnss_outside_the_run() -> None:
+    """A run cut short with ``--steps`` must not be compared with later GNSS.
+
+    The GNSS log covers the whole drive. Every sample after the last pose used
+    to be matched to that last pose, so a 2000-step Victoria Park run showed a
+    96 m "error" that was really just the car driving on without the filter.
+    """
+    from graphslam.plotting.plotting_funcs import plot_position_nis
+
+    # Ten poses driving along x at 1 m/s, one per second.
+    times = np.arange(10.0)
+    poses = np.column_stack([times, np.zeros(10), np.zeros(10)])
+    poses_covs = np.tile(np.diag([0.25, 0.25, 0.01]), (10, 1, 1))
+
+    # GNSS keeps logging for twice as long, and starts before the first pose.
+    gnss_times = np.arange(-5.0, 20.0)
+    gnss = np.column_stack([gnss_times, gnss_times, np.zeros_like(gnss_times)])
+
+    fig, ax = plot_position_nis(gnss=gnss, poses=poses, poses_covs=poses_covs, poses_times=times)
+
+    nis = _nis_values(ax)
+    assert len(nis) == 10, f"only the 10 GNSS samples inside the run should be used, got {len(nis)}"
+    np.testing.assert_allclose(nis, 0.0, atol=1e-12)
+    plt.close(fig)
+
+
+def test_position_nis_uses_the_configured_gnss_sigma() -> None:
+    """``noise.sigma_gnss`` must reach the NIS; it used to be a hardcoded 1 m."""
+    from graphslam.plotting.plotting_funcs import plot_position_nis
+
+    times = np.arange(5.0)
+    poses = np.column_stack([times, np.zeros(5), np.zeros(5)])
+    poses_covs = np.zeros((5, 3, 3))  # all the uncertainty is the GNSS's
+    gnss = np.column_stack([times, times + 1.0, np.zeros(5)])  # 1 m off in x
+
+    fig, ax = plot_position_nis(
+        gnss=gnss, poses=poses, poses_covs=poses_covs, poses_times=times, sigma_gnss=2.0
+    )
+
+    nis = _nis_values(ax)
+    np.testing.assert_allclose(nis, (1.0 / 2.0) ** 2)
+    plt.close(fig)
+
+
+def test_shipped_real_config_keeps_the_one_metre_gnss_sigma() -> None:
+    config = SlamConfig.load(ROOT / "configs" / "real_default.yaml")
+    assert config.noise.sigma_gnss == 1.0
+
+
+@needs_data
+def test_plotter_replots_a_finished_run(plotted_run: Path, tmp_path: Path) -> None:
+    """``plot_run <dir>`` must work on a run directory after the fact.
+
+    This is the path students use when they want a different figure format, or
+    want to compare two runs without re-running either.
+    """
+    from graphslam.plotter import SlamRunPlotter
+
+    plotter = SlamRunPlotter.from_run(plotted_run)
+    assert plotter.snapshots, "snapshots should have been logged"
+
+    fig, _ = plotter.plot_final_snapshot()
+    out = tmp_path / "replot.png"
+    fig.savefig(out)
+    plt.close(fig)
+
+    assert out.stat().st_size > 0

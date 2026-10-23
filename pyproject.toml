@@ -1,0 +1,47 @@
+[project]
+name = "graphslam"
+version = "1.0.0"
+description = "TTK4250 Group Assignment 2: factor graph SLAM with GTSAM"
+readme = "README.md"
+# GTSAM 4.3 publishes wheels for CPython 3.11-3.14; the upper bound turns a
+# missing wheel into a clear resolver error instead of a failed source build.
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    # 4.3 is the first stable release exposing ISAM2.jointMarginalCovariance,
+    # which the back-end (graphslam.slam.Backend.joint_covariance) calls. Older
+    # releases need a development build; do not relax this bound.
+    # Do not add dependencies beyond this list.
+    "gtsam>=4.3,<5",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "omegaconf>=2.3",
+    "scipy>=1.11",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+run_sim = "graphslam.run_sim:main"
+run_real = "graphslam.run_real:main"
+plot_run = "graphslam.plotter:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+# One marker per part of Task 1: `pytest -m c3` runs the tests for (c3).
+markers = [
+    "a: tests for Task 1 (a)",
+    "b: tests for Task 1 (b)",
+    "c1: tests for Task 1 (c1)",
+    "c2: tests for Task 1 (c2)",
+    "c3: tests for Task 1 (c3)",
+    "d: tests for Task 1 (d)",
+    "e: tests for Task 1 (e)",
+    "f: tests for Task 1 (f)",
+    "g: tests for Task 1 (g)",
+    "h: tests for Task 1 (h)",
+    "given: a test in a graded test file that only exercises given code",
+]
