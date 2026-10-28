@@ -1,4 +1,5 @@
 *.egg-info/
+runs/*
 
 # Python bytecode
 __pycache__/
